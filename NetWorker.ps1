@@ -24,14 +24,8 @@ function Write-NetWorkerLogo {
         $line = [string]::new([char]0x2550, 62)
         Write-Host ""
         Write-Host "  $line" -ForegroundColor Cyan
-        Write-Host "   _   _      _    __        __            " -ForegroundColor Cyan
-        Write-Host "  | \ | | ___| |_  \ \      / /__  _ __ _ _ " -ForegroundColor Green
-        Write-Host "  |  \| |/ _ \ __|  \ \ /\ / / _ \| '__| | |" -ForegroundColor Yellow
-        Write-Host "  | |\  |  __/ |_    \ V  V / (_) | |  | |_| " -ForegroundColor Magenta
-        Write-Host "  |_| \_|\___|\__|    \_/\_/ \___/|_|   \__, |" -ForegroundColor Red
-        Write-Host "                                        |___/ " -ForegroundColor DarkGray
+        Write-Host "  NetWorker $script:NetWorkerVersion  |  Windows 11 PowerShell  |  no installation" -ForegroundColor Green
         Write-Host "  $line" -ForegroundColor Cyan
-        Write-Host "  NetWorker $script:NetWorkerVersion  |  Windows 11 PowerShell  |  no installation" -ForegroundColor DarkGray
         Write-Host ""
     }
 }
