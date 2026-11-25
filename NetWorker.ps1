@@ -39,7 +39,10 @@ function Write-NetWorkerMenu {
     Write-Host "  [3]  Geraete im Netzwerk zaehlen" -ForegroundColor Green
     Write-Host "  [4]  Geschwindigkeit testen" -ForegroundColor Green
     Write-Host "  [5]  Uebersicht / Netzwerk-Info" -ForegroundColor Green
-    Write-Host "  [6]  Hilfe" -ForegroundColor Yellow
+    Write-Host "  [6]  Oeffentliche IP / Internet-Info" -ForegroundColor Green
+    Write-Host "  [7]  DNS-Abfrage (Name -> IP)" -ForegroundColor Green
+    Write-Host "  [8]  Traceroute (Route verfolgen)" -ForegroundColor Green
+    Write-Host "  [9]  Hilfe" -ForegroundColor Yellow
     Write-Host "  [0]  Beenden" -ForegroundColor Red
     Write-Host "  ----------------------------------------------------------" -ForegroundColor DarkGray
 }
@@ -260,6 +263,61 @@ function Show-NetWorkerOverview {
     Read-Host "  Enter zum Zurueckkehren"
 }
 
+function Show-NetWorkerPublicIP {
+    Write-Host ""
+    Write-Host "  Oeffentliche IP / Internet-Info (automatisch)..." -ForegroundColor Cyan
+    try {
+        $info = Invoke-RestMethod -Uri 'https://ipinfo.io/json' -TimeoutSec 15
+        Write-Host ""
+        [pscustomobject]@{
+            IP        = $info.ip
+            Stadt     = $info.city
+            Region    = $info.region
+            Land      = $info.country
+            Anbieter  = $info.org
+            Zeitzone  = $info.timezone
+        } | Format-List
+    } catch {
+        Write-Host ("  Abfrage fehlgeschlagen: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    }
+    Read-Host "  Enter zum Zurueckkehren"
+}
+
+function Show-NetWorkerDns {
+    Write-Host ""
+    Write-Host "  DNS-Abfrage" -ForegroundColor Cyan
+    $name = Read-Host "  Hostname oder Domain (Enter = google.com)"
+    if ([string]::IsNullOrWhiteSpace($name)) { $name = 'google.com' }
+    try {
+        $records = Resolve-DnsName -Name $name -ErrorAction Stop |
+            Where-Object { $_.IPAddress } |
+            Select-Object Name, Type, IPAddress
+        if ($records) {
+            Write-Host ""
+            $records | Format-Table -AutoSize
+        } else {
+            Write-Host "  Keine Adressen gefunden." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host ("  Abfrage fehlgeschlagen: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    }
+    Read-Host "  Enter zum Zurueckkehren"
+}
+
+function Invoke-NetWorkerTrace {
+    Write-Host ""
+    Write-Host "  Traceroute (Route verfolgen)" -ForegroundColor Cyan
+    $target = Read-Host "  Ziel (Enter = 8.8.8.8)"
+    if ([string]::IsNullOrWhiteSpace($target)) { $target = '8.8.8.8' }
+    Write-Host ""
+    try {
+        tracert.exe -d -h 15 -w 1000 $target
+    } catch {
+        Write-Host ("  Traceroute fehlgeschlagen: {0}" -f $_.Exception.Message) -ForegroundColor Red
+    }
+    Read-Host "  Enter zum Zurueckkehren"
+}
+
 function Show-NetWorkerHelp {
     Write-Host ""
     Write-Host "  NetWorker Hilfe" -ForegroundColor Cyan
@@ -268,6 +326,10 @@ function Show-NetWorkerHelp {
     Write-Host "  - [3] zaehlt erreichbare Geraete im Subnetz." -ForegroundColor White
     Write-Host "  - [4] misst eine einfache Download-Geschwindigkeit." -ForegroundColor White
     Write-Host "  - [5] zeigt lokale IP, Gateway, Subnetz und aktive Adapter." -ForegroundColor White
+    Write-Host "  - [6] zeigt oeffentliche IP, Standort und Internetanbieter." -ForegroundColor White
+    Write-Host "  - [7] loest einen Hostnamen per DNS in eine IP auf." -ForegroundColor White
+    Write-Host "  - [8] verfolgt die Route zu einem Ziel (Traceroute)." -ForegroundColor White
+    Write-Host "  - [9] Hilfe." -ForegroundColor White
     Write-Host "  - [0] beendet NetWorker." -ForegroundColor White
     Write-Host ""
     Read-Host "  Enter zum Zurueckkehren"
@@ -285,7 +347,10 @@ function Start-NetWorker {
             '3' { Invoke-NetWorkerDeviceCount }
             '4' { Invoke-NetWorkerSpeedTest }
             '5' { Show-NetWorkerOverview }
-            '6' { Show-NetWorkerHelp }
+            '6' { Show-NetWorkerPublicIP }
+            '7' { Show-NetWorkerDns }
+            '8' { Invoke-NetWorkerTrace }
+            '9' { Show-NetWorkerHelp }
             '0' { Write-Host ""; Write-Host "  NetWorker beendet." -ForegroundColor Cyan; return }
             default { Write-Host "  Ungueltige Auswahl." -ForegroundColor Red; Start-Sleep -Milliseconds 600 }
         }
