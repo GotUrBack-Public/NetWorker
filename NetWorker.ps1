@@ -3,8 +3,9 @@
     NetWorker - modernes PowerShell-Netzwerktool fuer Windows 11.
 .DESCRIPTION
     Startet ohne Installation direkt aus einem Git-Clone.
-    Bietet ein nummerisches Menue fuer Netzwerkscan, Ping, Geraetezaehlung
-    und eine einfache Geschwindigkeitsmessung.
+    Erkennt das lokale Netzwerk automatisch und bietet ein nummerisches Menue
+    fuer Netzwerkscan, Ping, Geraetezaehlung und Geschwindigkeitsmessung.
+    Kompatibel mit Windows PowerShell 5.1 und PowerShell 7.
 #>
 
 [CmdletBinding()]
@@ -15,34 +16,20 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:NetWorkerVersion = '1.0.0'
-$script:NetWorkerRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:NetWorkerVersion = '1.1.0'
 
 function Write-NetWorkerLogo {
-    param([switch]$Small)
-
     Clear-Host
     if (-not $NoLogo) {
         $line = [string]::new([char]0x2550, 62)
         Write-Host ""
         Write-Host "  $line" -ForegroundColor Cyan
-        Write-Host "  " -NoNewline
-        Write-Host "  _   _      _    __        __            " -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  " -NoNewline
-        Write-Host " | \ | | ___| |_  \ \      / /__  _ __ _ _ " -ForegroundColor Green
-        Write-Host ""
-        Write-Host "  " -NoNewline
-        Write-Host " |  \| |/ _ \ __|  \ \ /\ / / _ \| '__| | |" -ForegroundColor Yellow
-        Write-Host ""
-        Write-Host "  " -NoNewline
-        Write-Host " | |\  |  __/ |_    \ V  V / (_) | |  | |_| " -ForegroundColor Magenta
-        Write-Host ""
-        Write-Host "  " -NoNewline
-        Write-Host " |_| \_|\___|\__|    \_/\_/ \___/|_|   \__, |" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  " -NoNewline
-        Write-Host "                                       |___/ " -ForegroundColor DarkGray
+        Write-Host "   _   _      _    __        __            " -ForegroundColor Cyan
+        Write-Host "  | \ | | ___| |_  \ \      / /__  _ __ _ _ " -ForegroundColor Green
+        Write-Host "  |  \| |/ _ \ __|  \ \ /\ / / _ \| '__| | |" -ForegroundColor Yellow
+        Write-Host "  | |\  |  __/ |_    \ V  V / (_) | |  | |_| " -ForegroundColor Magenta
+        Write-Host "  |_| \_|\___|\__|    \_/\_/ \___/|_|   \__, |" -ForegroundColor Red
+        Write-Host "                                        |___/ " -ForegroundColor DarkGray
         Write-Host "  $line" -ForegroundColor Cyan
         Write-Host "  NetWorker $script:NetWorkerVersion  |  Windows 11 PowerShell  |  no installation" -ForegroundColor DarkGray
         Write-Host ""
@@ -54,7 +41,7 @@ function Write-NetWorkerMenu {
     Write-Host "  MAIN MENU" -ForegroundColor White
     Write-Host "  ----------------------------------------------------------" -ForegroundColor DarkGray
     Write-Host "  [1]  Netzwerk scannen" -ForegroundColor Green
-    Write-Host "  [2]  Ping-Test" -ForegroundColor Green
+    Write-Host "  [2]  Ping-Test (Gateway, automatisch)" -ForegroundColor Green
     Write-Host "  [3]  Geraete im Netzwerk zaehlen" -ForegroundColor Green
     Write-Host "  [4]  Geschwindigkeit testen" -ForegroundColor Green
     Write-Host "  [5]  Uebersicht / Netzwerk-Info" -ForegroundColor Green
@@ -65,9 +52,7 @@ function Write-NetWorkerMenu {
 
 function Get-NetWorkerLocalIPv4 {
     $adapter = Get-NetIPConfiguration -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up'
-        } |
+        Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } |
         Select-Object -First 1
 
     if (-not $adapter) {
@@ -82,21 +67,33 @@ function Get-NetWorkerLocalIPv4 {
 
     $ipv4 = $adapter.IPv4Address.IPAddress
     $prefix = [int]$adapter.IPv4Address.PrefixLength
-    $mask = [System.Net.IPAddress]::Parse(
-        ([uint32]([Math]::Pow(2, 32) - [Math]::Pow(2, 32 - $prefix)))
-    ).GetAddressBytes()
+    $maskValue = [uint32]([Math]::Pow(2, 32) - [Math]::Pow(2, 32 - $prefix))
+    $maskBytes = [byte[]]@(
+        [byte](($maskValue -shr 24) -band 0xFF),
+        [byte](($maskValue -shr 16) -band 0xFF),
+        [byte](($maskValue -shr 8) -band 0xFF),
+        [byte]($maskValue -band 0xFF)
+    )
 
     $ipBytes = [System.Net.IPAddress]::Parse($ipv4).GetAddressBytes()
-    $networkBytes = for ($i = 0; $i -lt 4; $i++) { $ipBytes[$i] -band $mask[$i] }
-    $network = [System.Net.IPAddress]::new($networkBytes).IPAddressToString
+    $networkBytes = [byte[]]@(
+        [byte]($ipBytes[0] -band $maskBytes[0]),
+        [byte]($ipBytes[1] -band $maskBytes[1]),
+        [byte]($ipBytes[2] -band $maskBytes[2]),
+        [byte]($ipBytes[3] -band $maskBytes[3])
+    )
+    $network = ([System.Net.IPAddress]::new($networkBytes)).IPAddressToString
+
+    $gateway = $null
+    if ($adapter.IPv4DefaultGateway) { $gateway = $adapter.IPv4DefaultGateway.NextHop }
 
     return [pscustomobject]@{
         InterfaceAlias = $adapter.InterfaceAlias
         IPv4           = $ipv4
         PrefixLength   = $prefix
-        Gateway        = $adapter.IPv4DefaultGateway.NextHop
+        Gateway        = $gateway
         Network        = $network
-        SubnetMask     = ([System.Net.IPAddress]::new($mask)).IPAddressToString
+        SubnetMask     = ([System.Net.IPAddress]::new($maskBytes)).IPAddressToString
     }
 }
 
@@ -112,7 +109,7 @@ function Get-NetWorkerSubnetRange {
 
     $baseBytes = [System.Net.IPAddress]::Parse($Network).GetAddressBytes()
     $base = [uint32](($baseBytes[0] * 16777216) + ($baseBytes[1] * 65536) + ($baseBytes[2] * 256) + $baseBytes[3])
-    $hostCount = [Math]::Pow(2, 32 - $PrefixLength) - 2
+    $hostCount = [int]([Math]::Pow(2, 32 - $PrefixLength) - 2)
     if ($hostCount -gt 1024) {
         throw "Dieses Subnetz enthaelt zu viele Hosts ($hostCount). Bitte ein kleineres Subnetz verwenden."
     }
@@ -135,15 +132,16 @@ function Get-NetWorkerSubnetRange {
 function Test-NetWorkerHost {
     param([Parameter(Mandatory)] [string]$IPAddress)
 
-    $result = Test-Connection -TargetName $IPAddress -Count 1 -Quiet -TimeoutSeconds 1 -ErrorAction SilentlyContinue
+    $result = Test-Connection -ComputerName $IPAddress -Count 1 -Quiet -ErrorAction SilentlyContinue
     if (-not $result) {
         return $null
     }
 
-    $name = try {
-        [System.Net.Dns]::GetHostEntry($IPAddress).HostName
+    $name = $IPAddress
+    try {
+        $name = [System.Net.Dns]::GetHostEntry($IPAddress).HostName
     } catch {
-        $IPAddress
+        $name = $IPAddress
     }
 
     return [pscustomobject]@{
@@ -166,48 +164,42 @@ function Invoke-NetWorkerScan {
         $hostInfo = Test-NetWorkerHost -IPAddress $ip
         if ($hostInfo) { $hostInfo }
     }
+    $found = @($found)
 
-    $found = @($found | Sort-Object { $parts = $_.IPAddress.Split('.'); [int]$parts[0] * 16777216 + [int]$parts[1] * 65536 + [int]$parts[2] * 256 + [int]$parts[3] })
     if ($found.Count -eq 0) {
         Write-Host "  Keine Geraete gefunden." -ForegroundColor Yellow
-        return
+    } else {
+        Write-Host ""
+        Write-Host ("  {0} Geraet(e) gefunden:" -f $found.Count) -ForegroundColor Green
+        $found | Format-Table -AutoSize
     }
-
-    Write-Host ""
-    Write-Host ("  {0} Geraet(e) gefunden:" -f $found.Count) -ForegroundColor Green
-    $found | Format-Table -AutoSize
     Read-Host "  Enter zum Zurueckkehren"
 }
 
 function Invoke-NetWorkerPing {
-    $target = Read-Host "  Ziel (IP oder Hostname, Enter fuer Gateway)"
-    if ([string]::IsNullOrWhiteSpace($target)) {
-        $local = Get-NetWorkerLocalIPv4
-        $target = if ($local.Gateway) { $local.Gateway } else { '8.8.8.8' }
-    }
+    $local = Get-NetWorkerLocalIPv4
+    $target = if ($local.Gateway) { $local.Gateway } else { '8.8.8.8' }
+    $count = 4
 
     Write-Host ""
-    Write-Host ("  Ping an {0}..." -f $target) -ForegroundColor Cyan
-    $count = Read-Host "  Anzahl Ping (Enter = 4)"
-    if ([string]::IsNullOrWhiteSpace($count)) { $count = '4' }
-    if ($count -notmatch '^\d+$' -or [int]$count -lt 1 -or [int]$count -gt 100) {
-        Write-Host "  Ungueltige Anzahl. Bitte 1 bis 100." -ForegroundColor Red
-        return
-    }
+    Write-Host ("  Ping an {0} (automatisch, {1} Pakete)..." -f $target, $count) -ForegroundColor Cyan
 
-    $pings = @(Test-Connection -TargetName $target -Count ([int]$count) -ErrorAction Stop)
-    $success = @($pings | Where-Object { $_.Status -eq 'Success' })
-    $times = @($success | ForEach-Object { [int]$_.Latency })
-    $avg = 0
-    $min = 0
-    $max = 0
-    if ($times.Count -gt 0) { $avg = [Math]::Round(($times | Measure-Object -Average).Average, 1) }
-    if ($times.Count -gt 0) { $min = ($times | Measure-Object -Minimum).Minimum }
-    if ($times.Count -gt 0) { $max = ($times | Measure-Object -Maximum).Maximum }
+    $pings = @(Test-Connection -ComputerName $target -Count $count -ErrorAction SilentlyContinue)
+    $success = @($pings | Where-Object { $_.StatusCode -eq 0 -or $_.Status -eq 'Success' })
+    $times = @($success | ForEach-Object {
+        if ($null -ne $_.ResponseTime) { [int]$_.ResponseTime } elseif ($null -ne $_.Latency) { [int]$_.Latency }
+    })
+
+    $avg = 0; $min = 0; $max = 0
+    if ($times.Count -gt 0) {
+        $avg = [Math]::Round(($times | Measure-Object -Average).Average, 1)
+        $min = ($times | Measure-Object -Minimum).Minimum
+        $max = ($times | Measure-Object -Maximum).Maximum
+    }
     $denominator = [double]$count
     $loss = [Math]::Round((1 - ($success.Count / $denominator)) * 100, 1)
 
-    $pings | Format-Table Status, Address, Latency, Hop -AutoSize
+    $pings | Format-Table -AutoSize
     Write-Host ""
     Write-Host ("  Ergebnis: {0}/{1} erreichbar | Verlust: {2}% | Ping min/avg/max: {3}/{4}/{5} ms" -f $success.Count, $count, $loss, $min, $avg, $max) -ForegroundColor Green
     Read-Host "  Enter zum Zurueckkehren"
@@ -224,32 +216,28 @@ function Invoke-NetWorkerDeviceCount {
         $hostInfo = Test-NetWorkerHost -IPAddress $ip
         if ($hostInfo) { $hostInfo }
     }
+    $found = @($found)
 
-    $count = @($found).Count
     Write-Host ""
-    Write-Host ("  Gefundene Geraete: {0}" -f $count) -ForegroundColor Green
-    if ($count -gt 0) {
-        @($found) | Format-Table IPAddress, Hostname, Status -AutoSize
+    Write-Host ("  Gefundene Geraete: {0}" -f $found.Count) -ForegroundColor Green
+    if ($found.Count -gt 0) {
+        $found | Format-Table IPAddress, Hostname, Status -AutoSize
     }
     Read-Host "  Enter zum Zurueckkehren"
 }
 
 function Invoke-NetWorkerSpeedTest {
     Write-Host ""
-    Write-Host "  Einfacher Geschwindigkeitstest" -ForegroundColor Cyan
-    Write-Host "  Hinweis: Misst die Latenz zu einem Ziel und schaetzt die Downloadzeit einer kleinen Datei." -ForegroundColor DarkGray
+    Write-Host "  Einfacher Geschwindigkeitstest (automatisch)..." -ForegroundColor Cyan
+    Write-Host "  Hinweis: Laedt eine kleine Datei und schaetzt die Download-Geschwindigkeit." -ForegroundColor DarkGray
 
-    $url = Read-Host "  Test-URL (Enter = Cloudflare speedtest)"
-    if ([string]::IsNullOrWhiteSpace($url)) {
-        $url = 'https://speed.cloudflare.com/__down?bytes=1000000'
-    }
-
+    $url = 'https://speed.cloudflare.com/__down?bytes=1000000'
     try {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30
         $sw.Stop()
         $bytes = [int64]$response.RawContentLength
-        if ($bytes -le 0) { $bytes = [int64]$response.Content.Length }
+        if ($bytes -le 0 -and $response.Content) { $bytes = [int64]$response.Content.Length }
         $seconds = [Math]::Max($sw.Elapsed.TotalSeconds, 0.001)
         $mbps = [Math]::Round(($bytes * 8 / 1MB) / $seconds, 2)
 
@@ -264,7 +252,7 @@ function Invoke-NetWorkerSpeedTest {
 
 function Show-NetWorkerOverview {
     $local = Get-NetWorkerLocalIPv4
-    $adapters = Get-NetAdapter | Where-Object Status -eq 'Up' | Select-Object Name, InterfaceDescription, LinkSpeed, MacAddress
+    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object Name, InterfaceDescription, LinkSpeed, MacAddress
     Write-Host ""
     Write-Host "  Netzwerk-Uebersicht" -ForegroundColor Cyan
     [pscustomobject]@{
@@ -274,7 +262,7 @@ function Show-NetWorkerOverview {
         Gateway   = $local.Gateway
         Maske     = $local.SubnetMask
     } | Format-List
-    $adapters | Format-Table -AutoSize
+    if ($adapters) { $adapters | Format-Table -AutoSize }
     Read-Host "  Enter zum Zurueckkehren"
 }
 
@@ -282,7 +270,7 @@ function Show-NetWorkerHelp {
     Write-Host ""
     Write-Host "  NetWorker Hilfe" -ForegroundColor Cyan
     Write-Host "  - [1] scannt das lokale IPv4-Subnetz per Ping." -ForegroundColor White
-    Write-Host "  - [2] testet ein Ziel mit ICMP-Ping." -ForegroundColor White
+    Write-Host "  - [2] testet automatisch das Gateway mit ICMP-Ping." -ForegroundColor White
     Write-Host "  - [3] zaehlt erreichbare Geraete im Subnetz." -ForegroundColor White
     Write-Host "  - [4] misst eine einfache Download-Geschwindigkeit." -ForegroundColor White
     Write-Host "  - [5] zeigt lokale IP, Gateway, Subnetz und aktive Adapter." -ForegroundColor White
